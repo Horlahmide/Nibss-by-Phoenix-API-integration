@@ -60,7 +60,8 @@ export const initiateTransfer = async (req, res) => {
     if (!nameEnquiryResponse.ok) {
       return res.status(nameEnquiryResponse.status).json({
         success: false,
-        message: nameEnquiryData.message || "Failed to verify recipient account",
+        message:
+          nameEnquiryData.message || "Failed to verify recipient account",
         error: nameEnquiryData,
       });
     }
@@ -116,28 +117,59 @@ export const initiateTransfer = async (req, res) => {
       });
     }
 
-    // Step 5: Confirm transaction status via TSQ
-    const tsqResponse = await fetch(
-      `${nibbsBaseUrl}/api/transaction/${transferData.transactionId}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: nibbsToken,
-        },
-      },
-    );
+    // NIBSS can return HTTP 200 with a failed status, so don't rely on status code alone.
+    if (transferData.status && transferData.status !== "SUCCESS") {
+      return res.status(400).json({
+        success: false,
+        message:
+          transferData.message || `Transfer failed with status ${transferData.status}`,
+        error: transferData,
+      });
+    }
 
-    const tsqData = await tsqResponse.json();
+    const externalTransactionId =
+      transferData.reference ??
+      transferData.transactionId ??
+      transferData._id;
+
+    if (!externalTransactionId) {
+      return res.status(502).json({
+        success: false,
+        message: "NIBSS did not return a transaction reference",
+        error: transferData,
+      });
+    }
+
+    // Step 5: Confirm transaction status via TSQ
+    let transferStatus = transferData.status || "SUCCESS";
+    try {
+      const tsqResponse = await fetch(
+        `${nibbsBaseUrl}/api/transaction/${externalTransactionId}`,
+        {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: nibbsToken,
+          },
+        },
+      );
+
+      const tsqData = await tsqResponse.json();
+      if (tsqResponse.ok && tsqData.status) {
+        transferStatus = tsqData.status;
+      }
+    } catch (error) {
+      console.error("TSQ confirmation failed:", error.message);
+    }
 
     // Step 6: Store transaction in MongoDB
     await Transaction.create({
       account: customer.account._id,
-      externalTransactionId: transferData.transactionId,
+      externalTransactionId,
       type: "TRANSFER",
       direction: "DEBIT",
       amount,
-      status: tsqData.status || "SUCCESS",
+      status: transferStatus,
       recipientAccountNumber: to,
       recipientAccountName: nameEnquiryData.accountName,
       recipientBank: nameEnquiryData.bankName,

@@ -39,3 +39,27 @@ and also i noticed when i create bvn first before proceedind to register, i got 
 }
 
 and i also noticed that it affected by login endpoit because if i have not registered i can not login and if i can not logig i cannot generate the jwt token my fronted needs for backend authetication and if my backend can't authenticate users well they will not be able to reach nibbs to be able tp perfom its services for them.
+
+### Transfer Fails with "externalTransactionId is required" Error
+
+**Issue:** Initiating a transfer returned:
+```
+Transaction validation failed: externalTransactionId: Path `externalTransactionId` is required.
+```
+
+**Root cause:** The code in `controllers/initiateTransfer.js` read the transaction ID from
+`transferData.transactionId`, but the NIBSS `/api/transfer` response actually returns the ID
+in the `reference` field (e.g. `{ "reference": "TX1788647723228", "status": "SUCCESS", ... }`).
+So `transferData.transactionId` was `undefined`, which caused the required
+`externalTransactionId` field in `models/transaction.js` to fail validation during the
+MongoDB write. This also made the TSQ step call `/api/transaction/undefined`.
+
+**Fix:** `controllers/initiateTransfer.js` now:
+1. Reads the ID from `transferData.reference` first, with fallbacks to `transactionId` and `_id`.
+2. Checks the transfer `status` (not just the HTTP code) and stops early if it is not `SUCCESS`.
+3. Returns a clear `502` if NIBSS gives no reference at all.
+4. Makes the TSQ confirmation safe so a failing TSQ call no longer crashes the request.
+
+**Result:** Transfers now save correctly to MongoDB using the real NIBSS reference, and
+failed transfers return clear error messages instead of the confusing database error.
+For reference: see `TRANSFER_FIX_NOTES.md` for the full explanation and code.
